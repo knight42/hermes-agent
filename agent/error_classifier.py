@@ -248,6 +248,18 @@ _AUTH_PATTERNS = [
     "access denied",
 ]
 
+# Safety / policy refusal patterns.
+# These are permanent refusals for the current request, not transient transport
+# or quota failures. Treat them as non-retryable so the agent can fail fast and
+# optionally try another provider instead of burning through retry attempts.
+_SAFETY_REFUSAL_PATTERNS = [
+    "flagged for potentially high-risk cyber activity",
+    "high-risk cyber activity",
+    "safety-checks/cybersecurity",
+    "content policy violation",
+    "safety policy",
+]
+
 # Anthropic thinking block signature patterns
 _THINKING_SIG_PATTERNS = [
     "signature",  # Combined with "thinking" check
@@ -905,6 +917,14 @@ def _classify_by_message(
             FailoverReason.context_overflow,
             retryable=True,
             should_compress=True,
+        )
+
+    # Safety / policy refusal patterns
+    if any(p in error_msg for p in _SAFETY_REFUSAL_PATTERNS):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
         )
 
     # Auth patterns

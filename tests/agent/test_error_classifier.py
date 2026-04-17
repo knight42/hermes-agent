@@ -592,6 +592,16 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.auth
 
+    def test_message_high_risk_cyber_activity_is_non_retryable(self):
+        e = Exception(
+            "This request has been flagged for potentially high-risk cyber activity. "
+            "Learn more here: https://platform.openai.com/docs/guides/safety-checks/cybersecurity"
+        )
+        result = classify_api_error(e, provider="openai")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_message_model_not_found_pattern(self):
         e = Exception("gpt-99 is not a valid model")
         result = classify_api_error(e)
