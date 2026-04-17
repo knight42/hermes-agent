@@ -116,7 +116,7 @@ class TestResolveProvider:
 
         # Clear all other provider env vars
         for var in ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY"]:
+                     "ANTHROPIC_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY"]:
             monkeypatch.delenv(var, raising=False)
 
         # Set AWS credentials
