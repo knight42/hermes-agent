@@ -206,6 +206,45 @@ class TestAppMentionHandler:
                 f"Slack slash regex does not match {expected}"
             )
 
+    def test_app_mention_handler_forwards_event_to_message_handler(self):
+        """app_mention events should be processed like normal Slack messages."""
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        registered_handlers = {}
+        mock_app = MagicMock()
+
+        def mock_event(event_type):
+            def decorator(fn):
+                registered_handlers[event_type] = fn
+                return fn
+            return decorator
+
+        mock_app.event = mock_event
+        mock_app.command = lambda _cmd: (lambda fn: fn)
+        mock_app.action = lambda _action: (lambda fn: fn)
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(return_value={
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team_id": "T_FAKE",
+            "team": "FakeTeam",
+        })
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task"), \
+             patch.object(adapter, "_handle_slack_message", new=AsyncMock()) as mock_handle:
+            asyncio.run(adapter.connect())
+            asyncio.run(registered_handlers["app_mention"]({"text": "<@U_BOT> hi"}, AsyncMock()))
+
+        mock_handle.assert_awaited_once_with({"text": "<@U_BOT> hi"})
+
 
 class TestSlackConnectCleanup:
     """Regression coverage for failed connect() cleanup."""

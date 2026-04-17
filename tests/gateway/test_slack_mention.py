@@ -4,8 +4,9 @@ Tests for Slack mention gating (require_mention / free_response_channels).
 Follows the same pattern as test_whatsapp_group_gating.py.
 """
 
+import asyncio
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
 
@@ -55,7 +56,7 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None):
+def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None, allowed_users=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -63,6 +64,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["strict_mention"] = strict_mention
     if free_response_channels is not None:
         extra["free_response_channels"] = free_response_channels
+    if allowed_users is not None:
+        extra["allowed_users"] = allowed_users
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -233,18 +236,47 @@ def test_free_response_channels_int_list():
 
 
 # ---------------------------------------------------------------------------
+# Tests: _slack_allowed_users
+# ---------------------------------------------------------------------------
+
+def test_allowed_users_default_empty(monkeypatch):
+    monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_allowed_users() == set()
+
+
+def test_allowed_users_list():
+    adapter = _make_adapter(allowed_users=["U123", "U456"])
+    assert adapter._slack_allowed_users() == {"U123", "U456"}
+
+
+def test_allowed_users_csv_string():
+    adapter = _make_adapter(allowed_users="U123, U456")
+    assert adapter._slack_allowed_users() == {"U123", "U456"}
+
+
+def test_allowed_users_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U123,U456")
+    adapter = _make_adapter()
+    assert adapter._slack_allowed_users() == {"U123", "U456"}
+
+
+# ---------------------------------------------------------------------------
 # Tests: mention gating integration (simulating _handle_slack_message logic)
 # ---------------------------------------------------------------------------
 
 def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
                    text="hello", mentioned=False, thread_reply=False,
-                   active_session=False):
+                   active_session=False, user_id="U_ALLOWED"):
     """Simulate the mention gating logic from _handle_slack_message.
 
     Returns True if the message would be processed, False if it would be
     skipped (returned early).
     """
     bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
+    allowed_users = adapter._slack_allowed_users()
+    if allowed_users and "*" not in allowed_users and user_id not in allowed_users:
+        return False
     if mentioned:
         text = f"<@{bot_uid}> {text}"
     is_mentioned = bot_uid and f"<@{bot_uid}>" in text
@@ -291,6 +323,16 @@ def test_other_channel_not_in_free_response_still_gated():
 def test_dm_always_processed_regardless_of_setting():
     adapter = _make_adapter(require_mention=True)
     assert _would_process(adapter, is_dm=True, text="hello") is True
+
+
+def test_allowed_users_blocks_non_matching_user():
+    adapter = _make_adapter(require_mention=False, allowed_users=["U_ZACK"])
+    assert _would_process(adapter, text="hello everyone", user_id="U_OTHER") is False
+
+
+def test_allowed_users_allows_matching_user():
+    adapter = _make_adapter(require_mention=False, allowed_users=["U_ZACK"])
+    assert _would_process(adapter, text="hello everyone", user_id="U_ZACK") is True
 
 
 def test_mentioned_message_always_processed():
@@ -358,19 +400,28 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
-    monkeypatch.delenv("SLACK_FREE_RESPONSE_CHANNELS", raising=False)
 
-    config = load_gateway_config()
-
-    assert config is not None
-    slack_extra = config.platforms[Platform.SLACK].extra
-    assert slack_extra.get("require_mention") is False
-    assert slack_extra.get("free_response_channels") == ["C0AQWDLHY9M", "C9999999999"]
-    # Verify env vars were set by config bridging
     import os as _os
-    assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
-    assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+    original_require_mention = _os.environ.pop("SLACK_REQUIRE_MENTION", None)
+    original_free_response = _os.environ.pop("SLACK_FREE_RESPONSE_CHANNELS", None)
+    try:
+        config = load_gateway_config()
+
+        assert config is not None
+        slack_extra = config.platforms[Platform.SLACK].extra
+        assert slack_extra.get("require_mention") is False
+        assert slack_extra.get("free_response_channels") == ["C0AQWDLHY9M", "C9999999999"]
+        assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
+        assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+    finally:
+        if original_require_mention is None:
+            _os.environ.pop("SLACK_REQUIRE_MENTION", None)
+        else:
+            _os.environ["SLACK_REQUIRE_MENTION"] = original_require_mention
+        if original_free_response is None:
+            _os.environ.pop("SLACK_FREE_RESPONSE_CHANNELS", None)
+        else:
+            _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = original_free_response
 
 
 def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):
@@ -395,6 +446,37 @@ def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tm
     assert slack_config.token == "xoxb-test"
     assert slack_config.extra.get("require_mention") is False
     assert "_enabled_explicit" not in slack_config.extra
+
+
+def test_config_bridges_slack_allowed_users(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  allowed_users:\n"
+        "    - UZACK123\n"
+        "    - UALT456\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import os as _os
+    original_allowed_users = _os.environ.pop("SLACK_ALLOWED_USERS", None)
+    try:
+        config = load_gateway_config()
+
+        assert config is not None
+        slack_extra = config.platforms[Platform.SLACK].extra
+        assert slack_extra.get("allowed_users") == ["UZACK123", "UALT456"]
+        assert _os.environ["SLACK_ALLOWED_USERS"] == "UZACK123,UALT456"
+    finally:
+        if original_allowed_users is None:
+            _os.environ.pop("SLACK_ALLOWED_USERS", None)
+        else:
+            _os.environ["SLACK_ALLOWED_USERS"] = original_allowed_users
 
 
 def test_explicit_top_level_slack_enabled_false_wins_over_env_token(monkeypatch, tmp_path):
@@ -552,3 +634,38 @@ def test_mention_outside_strict_mode_still_registers_thread():
         adapter._mentioned_threads.add(event_thread_ts)
 
     assert thread_ts in adapter._mentioned_threads
+
+
+def test_thread_context_keeps_messages_from_non_allowed_users():
+    adapter = _make_adapter(allowed_users=["U_ZACK"])
+    adapter._thread_context_cache = {}
+    adapter._THREAD_CACHE_TTL = 60
+    adapter._bot_user_id = BOT_USER_ID
+    adapter._team_bot_user_ids = {}
+
+    client = MagicMock()
+    client.conversations_replies = AsyncMock(return_value={
+        "messages": [
+            {"ts": "1000.000100", "user": "U_ZACK", "text": "parent from Zack"},
+            {"ts": "1000.000200", "user": "U_OTHER", "text": "reply from other person"},
+            {"ts": "1000.000300", "user": "U_ZACK", "text": "follow-up from Zack"},
+        ]
+    })
+    adapter._get_client = MagicMock(return_value=client)
+    adapter._resolve_user_name = AsyncMock(side_effect=lambda user_id, chat_id="": {
+        "U_ZACK": "Zack",
+        "U_OTHER": "Other",
+    }.get(user_id, user_id))
+
+    content = asyncio.run(
+        adapter._fetch_thread_context(
+            channel_id=CHANNEL_ID,
+            thread_ts="1000.000100",
+            current_ts="1000.000999",
+            team_id="T1",
+        )
+    )
+
+    assert "Zack: parent from Zack" in content
+    assert "Zack: follow-up from Zack" in content
+    assert "Other: reply from other person" in content

@@ -575,13 +575,11 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_message_event(event, say):
                 await self._handle_slack_message(event)
 
-            # Handle app_mention explicitly. In some Slack app configurations,
-            # channel mentions arrive only as app_mention events rather than the
-            # generic message event. Forward them into the normal message
-            # pipeline so @mentions reliably produce replies.
-            # NOTE: when Slack fires BOTH message and app_mention for the same
-            # @mention, they share the same event ts — the dedup in
-            # _handle_slack_message (MessageDeduplicator) suppresses the second.
+            # Process app_mention events through the same message pipeline.
+            # Some Slack workspaces deliver channel mentions as app_mention
+            # rather than message events, so forwarding here keeps mentions
+            # responsive while the dedup cache prevents double-processing if
+            # both event types arrive.
             @self._app.event("app_mention")
             async def handle_app_mention(event, say):
                 await self._handle_slack_message(event)
@@ -1859,6 +1857,16 @@ class SlackAdapter(BasePlatformAdapter):
             channel_type = "im"
         is_dm = channel_type in ("im", "mpim")  # Both 1:1 and group DMs
 
+        allowed_users = self._slack_allowed_users()
+        if allowed_users and user_id:
+            if "*" not in allowed_users and user_id not in allowed_users:
+                logger.debug(
+                    "[Slack] Ignoring message from non-allowed user %s in channel %s",
+                    user_id,
+                    channel_id,
+                )
+                return
+
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
@@ -2593,6 +2601,7 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     continue
 
+                msg_user = msg.get("user", "")
                 msg_text = msg.get("text", "").strip()
                 if not msg_text:
                     continue
@@ -2923,4 +2932,19 @@ class SlackAdapter(BasePlatformAdapter):
         s = str(raw).strip() if raw is not None else ""
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _slack_allowed_users(self) -> set:
+        """Return Slack user IDs allowed to trigger normal message handling.
+
+        Empty set means open access. Supports config list/string or
+        ``SLACK_ALLOWED_USERS`` env var, with ``*`` wildcard support.
+        """
+        raw = self.config.extra.get("allowed_users")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOWED_USERS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
