@@ -1427,6 +1427,17 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:
         return changed, active_sources
 
+    if provider == "anthropic":
+        # Keep Anthropic env auto-discovery behind the same explicit-config gate
+        # as file-backed singleton discovery. Otherwise unrelated provider
+        # selections can silently import Anthropic credentials into the pool.
+        try:
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured("anthropic"):
+                return changed, active_sources
+        except ImportError:
+            pass
+
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = _get_env_prefer_dotenv(pconfig.base_url_env_var).rstrip("/")
