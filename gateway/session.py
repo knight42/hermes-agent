@@ -449,6 +449,7 @@ class SessionEntry:
     total_tokens: int = 0
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
+    model_name: Optional[str] = None
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
@@ -508,6 +509,7 @@ class SessionEntry:
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
+            "model_name": self.model_name,
             "expiry_finalized": self.expiry_finalized,
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
@@ -561,6 +563,7 @@ class SessionEntry:
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
+            model_name=data.get("model_name"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
@@ -952,6 +955,14 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        input_tokens: int = None,
+        output_tokens: int = None,
+        cache_read_tokens: int = None,
+        cache_write_tokens: int = None,
+        total_tokens: int = None,
+        estimated_cost_usd: float = None,
+        cost_status: str = None,
+        model_name: Optional[str] = None,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
@@ -962,6 +973,22 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if input_tokens is not None:
+                    entry.input_tokens = input_tokens
+                if output_tokens is not None:
+                    entry.output_tokens = output_tokens
+                if cache_read_tokens is not None:
+                    entry.cache_read_tokens = cache_read_tokens
+                if cache_write_tokens is not None:
+                    entry.cache_write_tokens = cache_write_tokens
+                if total_tokens is not None:
+                    entry.total_tokens = total_tokens
+                if estimated_cost_usd is not None:
+                    entry.estimated_cost_usd = estimated_cost_usd
+                if cost_status is not None:
+                    entry.cost_status = cost_status
+                if model_name is not None:
+                    entry.model_name = model_name
                 self._save()
 
     def suspend_session(self, session_key: str) -> bool:

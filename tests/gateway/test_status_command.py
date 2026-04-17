@@ -12,20 +12,34 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
+def _make_source(
+    *,
+    platform: Platform = Platform.TELEGRAM,
+    chat_id: str = "c1",
+    chat_type: str = "dm",
+    thread_id: str | None = None,
+) -> SessionSource:
     return SessionSource(
         platform=platform,
         user_id="u1",
-        chat_id="c1",
+        chat_id=chat_id,
         user_name="tester",
-        chat_type="dm",
+        chat_type=chat_type,
+        thread_id=thread_id,
     )
 
 
-def _make_event(text: str, *, platform: Platform = Platform.TELEGRAM) -> MessageEvent:
+def _make_event(
+    text: str,
+    *,
+    platform: Platform = Platform.TELEGRAM,
+    chat_id: str = "c1",
+    chat_type: str = "dm",
+    thread_id: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
-        source=_make_source(platform),
+        source=_make_source(platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=thread_id),
         message_id="m1",
     )
 
@@ -73,6 +87,8 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
 
 @pytest.mark.asyncio
 async def test_status_command_reports_running_agent_without_interrupt(monkeypatch):
+    import gateway.run as gateway_run
+
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -92,11 +108,15 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
         "reasoning_tokens": 0,
     }
     running_agent = MagicMock()
+    running_agent.model = "openai/gpt-5.4"
     runner._running_agents[build_session_key(_make_source())] = running_agent
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_commit_label", lambda: "fd164909 · 2026-04-15T16:19:00Z")
 
     result = await runner._handle_message(_make_event("/status"))
 
     assert "**Session ID:** `sess-1`" in result
+    assert "**Commit:** `fd164909 · 2026-04-15T16:19:00Z`" in result
+    assert "**Model:** `openai/gpt-5.4`" in result
     assert "**Tokens:** 321" in result
     assert "**Agent Running:** Yes ⚡" in result
     assert "**Title:**" not in result
@@ -105,7 +125,47 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_session_title_when_present():
+async def test_status_command_includes_session_source_fields(monkeypatch):
+    import gateway.run as gateway_run
+
+    channel_id = "1495664751361917089"
+    thread_id = "1496582860621218035"
+    source = _make_source(platform=Platform.DISCORD, chat_id=thread_id, chat_type="thread", thread_id=thread_id)
+    session_entry = SessionEntry(
+        session_key=build_session_key(source),
+        session_id="sess-2",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="thread",
+        total_tokens=12,
+    )
+    runner = _make_runner(session_entry)
+    runner.adapters = {
+        Platform.TELEGRAM: MagicMock(send=AsyncMock()),
+        Platform.DISCORD: MagicMock(send=AsyncMock()),
+    }
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_commit_label", lambda: "fd164909 · 2026-04-15T16:19:00Z")
+
+    event = _make_event(
+        "/status",
+        platform=Platform.DISCORD,
+        chat_id=thread_id,
+        chat_type="thread",
+        thread_id=thread_id,
+    )
+    event.raw_message = SimpleNamespace(channel=SimpleNamespace(id=int(thread_id), parent_id=int(channel_id)))
+
+    result = await runner._handle_message(event)
+
+    assert "**Platform:** `discord`" in result
+    assert "**Chat ID:** `1495664751361917089`\n**Thread ID:** `1496582860621218035`" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_session_title_when_present(monkeypatch):
+    import gateway.run as gateway_run
+
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -117,6 +177,7 @@ async def test_status_command_includes_session_title_when_present():
     )
     runner = _make_runner(session_entry)
     runner._session_db.get_session_title.return_value = "My titled session"
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_commit_label", lambda: "fd164909 · 2026-04-15T16:19:00Z")
 
     result = await runner._handle_message(_make_event("/status"))
 
@@ -266,6 +327,11 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
             "last_prompt_tokens": 80,
             "input_tokens": 120,
             "output_tokens": 45,
+            "cache_read_tokens": 12,
+            "cache_write_tokens": 8,
+            "total_tokens": 185,
+            "estimated_cost_usd": 0.1234,
+            "cost_status": "estimated",
             "model": "openai/test-model",
         }
     )
@@ -282,6 +348,14 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
     runner.session_store.update_session.assert_called_once_with(
         session_entry.session_key,
         last_prompt_tokens=80,
+        input_tokens=120,
+        output_tokens=45,
+        cache_read_tokens=12,
+        cache_write_tokens=8,
+        total_tokens=185,
+        estimated_cost_usd=0.1234,
+        cost_status="estimated",
+        model_name="openai/test-model",
     )
 
 
@@ -290,7 +364,7 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
     import gateway.run as gateway_run
 
     session_entry = SessionEntry(
-        session_key=build_session_key(_make_source(Platform.SLACK)),
+        session_key=build_session_key(_make_source(platform=Platform.SLACK)),
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
@@ -334,7 +408,7 @@ async def test_first_run_non_slack_home_channel_onboarding_keeps_direct_command(
     import gateway.run as gateway_run
 
     session_entry = SessionEntry(
-        session_key=build_session_key(_make_source(Platform.TELEGRAM)),
+        session_key=build_session_key(_make_source(platform=Platform.TELEGRAM)),
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),

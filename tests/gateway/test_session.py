@@ -1152,6 +1152,45 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=85000)
         assert entry.last_prompt_tokens == 85000
 
+    def test_update_session_sets_usage_fields(self, tmp_path):
+        """update_session should persist usage and model metadata used by /status."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session(
+            "k1",
+            input_tokens=120,
+            output_tokens=45,
+            cache_read_tokens=12,
+            cache_write_tokens=8,
+            total_tokens=185,
+            estimated_cost_usd=0.1234,
+            cost_status="estimated",
+            model_name="openai/gpt-5.4",
+        )
+        assert entry.input_tokens == 120
+        assert entry.output_tokens == 45
+        assert entry.cache_read_tokens == 12
+        assert entry.cache_write_tokens == 8
+        assert entry.total_tokens == 185
+        assert entry.estimated_cost_usd == 0.1234
+        assert entry.cost_status == "estimated"
+        assert entry.model_name == "openai/gpt-5.4"
+
     def test_update_session_none_does_not_change(self, tmp_path):
         """update_session with default (None) should not change last_prompt_tokens."""
         config = GatewayConfig()
