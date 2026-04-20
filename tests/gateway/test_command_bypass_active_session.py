@@ -252,6 +252,22 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
+    async def test_btw_bypasses_guard(self):
+        """/btw must bypass so side questions can run while the main agent is busy."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/btw what changed upstream?"))
+
+        assert sk not in adapter._pending_messages, (
+            "/btw was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:btw" in r for r in adapter.sent_responses), (
+            "/btw response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
     async def test_queue_bypasses_guard(self):
         """/queue must bypass so it can queue without interrupting."""
         adapter = _make_adapter()
@@ -321,12 +337,15 @@ class TestAllResolvableCommandsBypassGuard:
 
     def test_should_bypass_returns_true_for_every_registered_command(self):
         """Spot-check: the commands previously-broken on Discord all bypass."""
-        from hermes_cli.commands import should_bypass_active_session
+        from hermes_cli.commands import ACTIVE_SESSION_BYPASS_COMMANDS, should_bypass_active_session
+
+        assert "btw" in ACTIVE_SESSION_BYPASS_COMMANDS
+        assert "queue" in ACTIVE_SESSION_BYPASS_COMMANDS
 
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
-            "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset",
+            "resume", "retry", "undo", "compress", "usage", "provider",
+            "reload-mcp", "sethome", "reset", "btw", "queue",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"

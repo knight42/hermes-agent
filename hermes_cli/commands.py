@@ -318,6 +318,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "agents",
         "approve",
         "background",
+        "btw",
         "commands",
         "deny",
         "help",

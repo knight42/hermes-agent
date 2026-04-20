@@ -5246,6 +5246,11 @@ class GatewayRunner:
                 # doesn't think an agent is still active.
                 return await self._handle_reset_command(event)
 
+            # /btw <question> — fire an ephemeral side question using the
+            # current session context without interrupting the active run.
+            if _cmd_def_inner and _cmd_def_inner.name == "btw":
+                return await self._handle_btw_command(event)
+
             # /queue <prompt> — queue without interrupting.
             # Semantics: each /queue invocation produces its own full agent
             # turn, processed in FIFO order after the current run (and any
