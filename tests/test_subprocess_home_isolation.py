@@ -93,6 +93,34 @@ class TestMakeRunEnvHomeInjection:
 
         assert result["HOME"] == str(hermes_home / "home")
 
+    def test_injects_gateway_session_routing_from_contextvars(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "home").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", "/root")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.environments.local import _make_run_env
+
+        tokens = set_session_vars(
+            platform="discord",
+            chat_id="1495664751361917089",
+            thread_id="1496376686319501423",
+        )
+        try:
+            result = _make_run_env({})
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["HERMES_SESSION_PLATFORM"] == "discord"
+        assert result["HERMES_SESSION_CHAT_ID"] == "1495664751361917089"
+        assert result["HERMES_SESSION_THREAD_ID"] == "1496376686319501423"
+
     def test_no_injection_when_home_dir_missing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()

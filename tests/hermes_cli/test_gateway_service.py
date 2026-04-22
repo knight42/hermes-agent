@@ -1,5 +1,6 @@
 """Tests for gateway service management helpers."""
 
+import json
 import os
 import pwd
 from pathlib import Path
@@ -12,6 +13,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
+from gateway.session_context import clear_session_vars, set_session_vars
 
 
 class TestUserSystemdPrivateSocketPreflight:
@@ -160,6 +162,55 @@ class TestRequireServiceInstalled:
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
         gateway_cli._require_service_installed("start")
+
+
+class TestGatewayRestartNotifications:
+    def test_request_gateway_self_restart_persists_current_session_target(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda _pid: True
+        )
+
+        killed = []
+
+        def fake_kill(pid, sig):
+            killed.append((pid, sig))
+
+        monkeypatch.setattr(gateway_cli.os, "kill", fake_kill)
+
+        tokens = set_session_vars(
+            platform="discord",
+            chat_id="1495664751361917089",
+            thread_id="1496376686319501423",
+        )
+        try:
+            assert gateway_cli._request_gateway_self_restart(321) is True
+        finally:
+            clear_session_vars(tokens)
+
+        notify_path = tmp_path / ".restart_notify.json"
+        assert notify_path.exists()
+        assert killed == [(321, gateway_cli.signal.SIGUSR1)]
+        assert json.loads(notify_path.read_text()) == {
+            "platform": "discord",
+            "chat_id": "1495664751361917089",
+            "thread_id": "1496376686319501423",
+        }
+
+    def test_request_gateway_self_restart_skips_notify_without_session_context(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda _pid: True
+        )
+        monkeypatch.setattr(gateway_cli.os, "kill", lambda pid, sig: None)
+
+        assert gateway_cli._request_gateway_self_restart(321) is True
+
+        assert not (tmp_path / ".restart_notify.json").exists()
 
 
 class TestGeneratedSystemdUnits:

@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import json
 import os
 import shutil
 import signal
@@ -176,6 +177,22 @@ def _request_gateway_self_restart(pid: int) -> bool:
         return False
     if not _is_pid_ancestor_of_current_process(pid):
         return False
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "")
+        if platform and chat_id:
+            payload = {
+                "platform": platform,
+                "chat_id": chat_id,
+            }
+            if thread_id:
+                payload["thread_id"] = thread_id
+            (get_hermes_home() / ".restart_notify.json").write_text(json.dumps(payload))
+    except Exception:
+        pass
     try:
         os.kill(pid, signal.SIGUSR1)
     except (ProcessLookupError, PermissionError, OSError):

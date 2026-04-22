@@ -215,6 +215,28 @@ def _make_run_env(env: dict) -> dict:
     if _profile_home:
         run_env["HOME"] = _profile_home
 
+    # Bridge gateway session routing context into subprocess envs so commands
+    # like `hermes gateway restart` launched from an active chat know which
+    # platform/chat/thread initiated them and can route completion/restart
+    # notifications back to the same conversation.
+    try:
+        from gateway.session_context import get_session_env
+
+        for _key in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_USER_ID",
+            "HERMES_SESSION_USER_NAME",
+            "HERMES_SESSION_KEY",
+        ):
+            _value = get_session_env(_key, "")
+            if _value:
+                run_env[_key] = _value
+    except Exception:
+        pass
+
     return run_env
 
 
