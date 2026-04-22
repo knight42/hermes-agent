@@ -2747,7 +2747,59 @@ class TelegramAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() in ("true", "1", "yes", "on")
             return bool(configured)
-        return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("TELEGRAM_REQUIRE_MENTION", "true").lower() in ("true", "1", "yes", "on")
+
+    @staticmethod
+    def _telegram_bool_setting(config: Any, *keys: str) -> Optional[bool]:
+        if not isinstance(config, dict):
+            return None
+        for key in keys:
+            if key not in config:
+                continue
+            value = config.get(key)
+            if isinstance(value, str):
+                return value.lower() in ("true", "1", "yes", "on")
+            return bool(value)
+        return None
+
+    def _telegram_groups_config(self) -> dict[str, Any]:
+        groups = self.config.extra.get("groups")
+        return groups if isinstance(groups, dict) else {}
+
+    def _telegram_require_mention_override(self, message: Message) -> Optional[bool]:
+        chat = getattr(message, "chat", None)
+        if not chat:
+            return None
+
+        groups = self._telegram_groups_config()
+        if not groups:
+            return None
+
+        chat_id = str(getattr(chat, "id", "")).strip()
+        if not chat_id:
+            return None
+
+        chat_cfg = groups.get(chat_id)
+        if not isinstance(chat_cfg, dict):
+            chat_cfg = None
+        global_cfg = groups.get("*")
+        if not isinstance(global_cfg, dict):
+            global_cfg = None
+
+        topic_cfg = None
+        thread_id = getattr(message, "message_thread_id", None)
+        if chat_cfg and thread_id is not None:
+            topics = chat_cfg.get("topics")
+            if isinstance(topics, dict):
+                topic_cfg = topics.get(str(thread_id))
+                if not isinstance(topic_cfg, dict):
+                    topic_cfg = None
+
+        for cfg in (topic_cfg, chat_cfg, global_cfg):
+            override = self._telegram_bool_setting(cfg, "require_mention", "requireMention")
+            if override is not None:
+                return override
+        return None
 
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
@@ -2929,7 +2981,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
-        if not self._telegram_require_mention():
+        require_mention = self._telegram_require_mention_override(message)
+        if require_mention is None:
+            require_mention = self._telegram_require_mention()
+        if not require_mention:
             return True
         if self._is_reply_to_bot(message):
             return True

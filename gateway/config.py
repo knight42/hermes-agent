@@ -767,6 +767,12 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if plat == Platform.TELEGRAM and "groups" in platform_cfg:
+                    groups = platform_cfg["groups"]
+                    if isinstance(groups, dict):
+                        bridged["groups"] = {str(k): v for k, v in groups.items()}
+                    else:
+                        bridged["groups"] = groups
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

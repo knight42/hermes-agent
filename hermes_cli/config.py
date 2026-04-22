@@ -1089,6 +1089,7 @@ DEFAULT_CONFIG = {
     "telegram": {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
+        "groups": {},                  # Optional nested per-group/per-topic gating overrides
     },
 
     # Slack platform settings (gateway mode)
