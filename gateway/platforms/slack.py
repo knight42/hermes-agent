@@ -2580,20 +2580,19 @@ class SlackAdapter(BasePlatformAdapter):
                 is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
                 msg_user = msg.get("user", "")
 
-                # Identify "our own" bot for this workspace (multi-workspace safe).
+                # Exclude only Hermes' own prior messages to avoid circular
+                # context. Keep third-party bot/integration alerts in thread
+                # context because they often contain the thing the user is
+                # asking about. Prefer exact sent-message ts tracking, and also
+                # skip self bot-user messages from before restart when the
+                # in-memory ts set is empty.
                 msg_team = msg.get("team") or team_id
                 self_bot_uid = (
                     self._team_bot_user_ids.get(msg_team)
                     if msg_team
                     else None
                 ) or self._bot_user_id
-
-                # Exclude only our own prior bot replies (circular context).
-                # Keep:
-                #   - the thread parent even if it was posted by a bot
-                #     (e.g. a cron job summary we are now replying to);
-                #   - other bots' child messages (useful third-party context).
-                if (
+                if msg_ts in self._bot_message_ts or (
                     is_bot
                     and not is_parent
                     and self_bot_uid
@@ -2602,6 +2601,9 @@ class SlackAdapter(BasePlatformAdapter):
                     continue
 
                 msg_user = msg.get("user", "")
+                if bot_uid and msg_user == bot_uid and msg.get("subtype") == "bot_message":
+                    continue
+
                 msg_text = msg.get("text", "").strip()
                 if not msg_text:
                     continue

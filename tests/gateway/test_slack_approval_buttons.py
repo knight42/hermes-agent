@@ -275,45 +275,58 @@ class TestSlackThreadContext:
         assert "<@U_BOT>" not in context
 
     @pytest.mark.asyncio
-    async def test_skips_bot_messages(self):
-        """Self-bot child replies are skipped to avoid circular context,
+    async def test_skips_only_hermes_bot_messages(self):
+        """Hermes self replies are skipped to avoid circular context,
         but non-self bots (e.g. cron posts, third-party integrations) are kept.
-
-        Regression guard for the fix in _fetch_thread_context: previously ALL
-        bot messages were dropped, which lost context when the bot was replying
-        to a cron-posted thread parent."""
+        """
         adapter = _make_adapter()
+        adapter._bot_message_ts = {"1000.1"}
         mock_client = adapter._team_clients["T1"]
         mock_client.conversations_replies = AsyncMock(return_value={
             "messages": [
                 {"ts": "1000.0", "user": "U1", "text": "Parent"},
-                # Self-bot reply -> must be skipped (circular)
-                {
-                    "ts": "1000.1",
-                    "bot_id": "B_SELF",
-                    "user": "U_BOT",
-                    "text": "Previous bot self-reply (should be skipped)",
-                },
-                # Third-party bot child -> kept (useful context)
-                {
-                    "ts": "1000.15",
-                    "bot_id": "B_OTHER",
-                    "user": "U_OTHER_BOT",
-                    "text": "Deploy succeeded",
-                },
+                {"ts": "1000.1", "bot_id": "B_HERMES", "subtype": "bot_message", "text": "Hermes reply (should be skipped)"},
+                {"ts": "1000.2", "bot_id": "B_ALERT", "subtype": "bot_message", "user": "U_OTHER_BOT", "text": "Deploy succeeded"},
+                {"ts": "1000.3", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._resolve_user_name = AsyncMock(side_effect=lambda user_id, chat_id="": {
+            "U1": "Alice",
+            "U_OTHER_BOT": "DeployBot",
+            "unknown": "Unknown",
+        }.get(user_id, user_id))
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0", current_ts="1000.3", team_id="T1"
+        )
+
+        assert "Hermes reply" not in context
+        assert "Alice: Parent" in context
+        assert "Deploy succeeded" in context
+
+    @pytest.mark.asyncio
+    async def test_skips_hermes_messages_by_bot_user_id_after_restart(self):
+        adapter = _make_adapter()
+        adapter._bot_message_ts = set()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "Parent"},
+                {"ts": "1000.1", "user": "U_BOT", "subtype": "bot_message", "text": "Hermes reply from before restart"},
                 {"ts": "1000.2", "user": "U1", "text": "Current"},
             ]
         })
-        adapter._user_name_cache = {"U1": "Alice", "U_OTHER_BOT": "DeployBot"}
+        adapter._resolve_user_name = AsyncMock(side_effect=lambda user_id, chat_id="": {
+            "U1": "Alice",
+            "U_BOT": "Hermes",
+        }.get(user_id, user_id))
 
         context = await adapter._fetch_thread_context(
             channel_id="C1", thread_ts="1000.0", current_ts="1000.2", team_id="T1"
         )
 
-        assert "Previous bot self-reply" not in context
+        assert "Hermes reply from before restart" not in context
         assert "Alice: Parent" in context
-        # Third-party bot message must now be included
-        assert "Deploy succeeded" in context
 
     @pytest.mark.asyncio
     async def test_empty_thread(self):
