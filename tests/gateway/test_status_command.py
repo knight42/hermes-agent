@@ -125,14 +125,15 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_session_source_fields(monkeypatch):
+async def test_status_command_includes_session_key_not_source_fields(monkeypatch):
     import gateway.run as gateway_run
 
     channel_id = "1495664751361917089"
     thread_id = "1496582860621218035"
     source = _make_source(platform=Platform.DISCORD, chat_id=thread_id, chat_type="thread", thread_id=thread_id)
+    session_key = build_session_key(source)
     session_entry = SessionEntry(
-        session_key=build_session_key(source),
+        session_key=session_key,
         session_id="sess-2",
         created_at=datetime.now(),
         updated_at=datetime.now(),
@@ -158,8 +159,10 @@ async def test_status_command_includes_session_source_fields(monkeypatch):
 
     result = await runner._handle_message(event)
 
-    assert "**Platform:** `discord`" in result
-    assert "**Chat ID:** `1495664751361917089`\n**Thread ID:** `1496582860621218035`" in result
+    assert f"**Session Key:** `{session_key}`" in result
+    assert "**Platform:**" not in result
+    assert "**Chat ID:**" not in result
+    assert "**Thread ID:**" not in result
 
 
 @pytest.mark.asyncio

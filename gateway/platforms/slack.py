@@ -1867,6 +1867,12 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
+        # Build a canonical thread_ts for session keying and thread detection.
+        # Slack assistant-related events may carry the thread identity via
+        # assistant metadata even when the top-level message payload omits
+        # ``thread_ts``.
+        incoming_thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
+
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
@@ -1875,11 +1881,11 @@ class SlackAdapter(BasePlatformAdapter):
         #   dm_top_level_threads_as_sessions: false in config to revert to
         #   legacy single-session-per-DM-channel behavior.
         if is_dm:
-            thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
+            thread_ts = incoming_thread_ts
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            thread_ts = incoming_thread_ts or ts  # ts fallback for channels
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
@@ -1889,10 +1895,24 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        routing_text = original_text or ""
+        routing_text = original_text or text or ""
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
-        event_thread_ts = event.get("thread_ts")
+        event_thread_ts = incoming_thread_ts
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+
+        logger.debug(
+            "[Slack debug] inbound thread detection: channel=%s ts=%s raw_thread_ts=%s assistant_thread_ts=%s incoming_thread_ts=%s event_thread_ts=%s is_dm=%s is_thread_reply=%s text=%r assistant_meta=%s",
+            channel_id,
+            ts,
+            event.get("thread_ts"),
+            assistant_meta.get("thread_ts", ""),
+            incoming_thread_ts,
+            event_thread_ts,
+            is_dm,
+            is_thread_reply,
+            text[:200],
+            assistant_meta,
+        )
 
         if not is_dm and bot_uid:
             if channel_id in self._slack_free_response_channels():
@@ -1917,7 +1937,25 @@ class SlackAdapter(BasePlatformAdapter):
                         user_id=user_id,
                     )
                 )
+                logger.debug(
+                    "[Slack debug] channel gating: channel=%s ts=%s thread_ts=%s is_mentioned=%s reply_to_bot_thread=%s in_mentioned_thread=%s has_session=%s mentioned_threads_contains=%s bot_message_ts_contains=%s",
+                    channel_id,
+                    ts,
+                    event_thread_ts,
+                    bool(is_mentioned),
+                    bool(reply_to_bot_thread),
+                    bool(in_mentioned_thread),
+                    bool(has_session),
+                    bool(event_thread_ts is not None and event_thread_ts in self._mentioned_threads),
+                    bool(is_thread_reply and event_thread_ts in self._bot_message_ts),
+                )
                 if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+                    logger.info(
+                        "[Slack debug] channel gating dropped message: channel=%s ts=%s thread_ts=%s",
+                        channel_id,
+                        ts,
+                        event_thread_ts,
+                    )
                     return
 
         if is_mentioned:
@@ -1936,16 +1974,35 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
-        ):
+        has_thread_session = False
+        if is_thread_reply:
+            has_thread_session = self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
+        logger.debug(
+            "[Slack debug] hydration decision: channel=%s ts=%s thread_ts=%s is_thread_reply=%s has_thread_session=%s will_fetch=%s",
+            channel_id,
+            ts,
+            event_thread_ts,
+            is_thread_reply,
+            has_thread_session,
+            bool(is_thread_reply and not has_thread_session),
+        )
+        if is_thread_reply and not has_thread_session:
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
                 thread_ts=event_thread_ts,
                 current_ts=ts,
                 team_id=team_id,
+            )
+            logger.debug(
+                "[Slack debug] hydration result: channel=%s ts=%s thread_ts=%s fetched_context_len=%d",
+                channel_id,
+                ts,
+                event_thread_ts,
+                len(thread_context or ""),
             )
             if thread_context:
                 text = thread_context + text
@@ -2502,6 +2559,48 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Thread context fetching -----
 
+    def _extract_message_text_for_context(self, msg: dict) -> str:
+        """Extract readable Slack message text for thread context hydration.
+
+        Slack top-level thread parents from bots/apps sometimes have empty
+        ``text`` while the visible content lives in attachments or block text.
+        Prefer the plain text field first, then fall back to common attachment
+        and block text containers.
+        """
+        text = (msg.get("text") or "").strip()
+        if text:
+            return text
+
+        attachment_parts = []
+        for attachment in msg.get("attachments", []) or []:
+            for key in ("pretext", "title", "text", "fallback"):
+                value = (attachment.get(key) or "").strip()
+                if value:
+                    attachment_parts.append(value)
+        if attachment_parts:
+            return "\n".join(dict.fromkeys(attachment_parts))
+
+        block_parts = []
+
+        def _walk_block_text(node):
+            if isinstance(node, dict):
+                node_type = node.get("type")
+                if node_type in {"plain_text", "mrkdwn", "text", "rich_text_section"}:
+                    value = (node.get("text") or "").strip()
+                    if value:
+                        block_parts.append(value)
+                for value in node.values():
+                    _walk_block_text(value)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk_block_text(item)
+
+        _walk_block_text(msg.get("blocks", []))
+        if block_parts:
+            return "\n".join(dict.fromkeys(block_parts))
+
+        return ""
+
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str,
         team_id: str = "", limit: int = 30,
@@ -2564,21 +2663,54 @@ class SlackAdapter(BasePlatformAdapter):
 
             messages = result.get("messages", [])
             if not messages:
+                logger.debug(
+                    "[Slack debug] fetch_thread_context empty API result: channel=%s thread_ts=%s current_ts=%s",
+                    channel_id,
+                    thread_ts,
+                    current_ts,
+                )
                 return ""
 
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            logger.debug(
+                "[Slack debug] fetch_thread_context raw messages: channel=%s thread_ts=%s current_ts=%s count=%d bot_uid=%s bot_message_ts_count=%d",
+                channel_id,
+                thread_ts,
+                current_ts,
+                len(messages),
+                bot_uid,
+                len(self._bot_message_ts),
+            )
             context_parts = []
             parent_text = ""
-            for msg in messages:
+            for idx, msg in enumerate(messages, 1):
                 msg_ts = msg.get("ts", "")
+                msg_user = msg.get("user", "")
+                msg_subtype = msg.get("subtype", "")
+                msg_bot_id = msg.get("bot_id", "")
+                raw_text = (msg.get("text", "") or "").strip()
+                logger.debug(
+                    "[Slack debug] fetch_thread_context msg[%d]: ts=%s user=%s subtype=%s bot_id=%s is_parent=%s is_current=%s text=%r",
+                    idx,
+                    msg_ts,
+                    msg_user,
+                    msg_subtype,
+                    msg_bot_id,
+                    bool(msg_ts == thread_ts),
+                    bool(msg_ts == current_ts),
+                    raw_text[:200],
+                )
                 # Exclude the current triggering message — it will be delivered
                 # as the user message itself, so including it here would duplicate it.
                 if msg_ts == current_ts:
+                    logger.info(
+                        "[Slack debug] fetch_thread_context skip msg[%d]: current message",
+                        idx,
+                    )
                     continue
 
                 is_parent = msg_ts == thread_ts
-                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
-                msg_user = msg.get("user", "")
+                is_bot = bool(msg.get("bot_id")) or msg_subtype == "bot_message"
 
                 # Exclude only Hermes' own prior messages to avoid circular
                 # context. Keep third-party bot/integration alerts in thread
@@ -2598,14 +2730,25 @@ class SlackAdapter(BasePlatformAdapter):
                     and self_bot_uid
                     and msg_user == self_bot_uid
                 ):
+                    logger.info(
+                        "[Slack debug] fetch_thread_context skip msg[%d]: Hermes bot message",
+                        idx,
+                    )
                     continue
 
-                msg_user = msg.get("user", "")
-                if bot_uid and msg_user == bot_uid and msg.get("subtype") == "bot_message":
+                if bot_uid and msg_user == bot_uid and msg_subtype == "bot_message":
+                    logger.info(
+                        "[Slack debug] fetch_thread_context skip msg[%d]: Hermes bot user/subtype match",
+                        idx,
+                    )
                     continue
 
-                msg_text = msg.get("text", "").strip()
+                msg_text = self._extract_message_text_for_context(msg)
                 if not msg_text:
+                    logger.info(
+                        "[Slack debug] fetch_thread_context skip msg[%d]: empty text",
+                        idx,
+                    )
                     continue
 
                 # Strip bot mentions from context messages
@@ -2621,8 +2764,20 @@ class SlackAdapter(BasePlatformAdapter):
                 context_parts.append(f"{prefix}{name}: {msg_text}")
                 if is_parent:
                     parent_text = msg_text
+                logger.debug(
+                    "[Slack debug] fetch_thread_context keep msg[%d]: rendered=%r",
+                    idx,
+                    context_parts[-1][:240],
+                )
 
             content = ""
+            logger.debug(
+                "[Slack debug] fetch_thread_context filtered summary: channel=%s thread_ts=%s kept=%d raw=%d",
+                channel_id,
+                thread_ts,
+                len(context_parts),
+                len(messages),
+            )
             if context_parts:
                 content = (
                     "[Thread context — prior messages in this thread (not yet in conversation history):]\n"

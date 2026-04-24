@@ -275,6 +275,38 @@ class TestSlackThreadContext:
         assert "<@U_BOT>" not in context
 
     @pytest.mark.asyncio
+    async def test_uses_attachment_text_when_message_text_empty(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "user": "U_ALERT",
+                    "bot_id": "B_ALERT",
+                    "text": "",
+                    "attachments": [
+                        {
+                            "fallback": "CPU high on node-1",
+                            "text": "CPU high on node-1",
+                        }
+                    ],
+                },
+                {"ts": "1000.1", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._resolve_user_name = AsyncMock(side_effect=lambda user_id, chat_id="": {
+            "U_ALERT": "AlertBot",
+            "U1": "Alice",
+        }.get(user_id, user_id))
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0", current_ts="1000.1", team_id="T1"
+        )
+
+        assert "[thread parent] AlertBot: CPU high on node-1" in context
+
+    @pytest.mark.asyncio
     async def test_skips_only_hermes_bot_messages(self):
         """Hermes self replies are skipped to avoid circular context,
         but non-self bots (e.g. cron posts, third-party integrations) are kept.

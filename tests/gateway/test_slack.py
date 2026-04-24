@@ -2025,6 +2025,43 @@ class TestThreadReplyHandling:
         assert msg_event.text == "thanks for the help"
 
     @pytest.mark.asyncio
+    async def test_thread_reply_detected_from_assistant_metadata_fetches_context(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Assistant metadata thread_ts should count as a channel thread reply."""
+        mock_session_store._entries = {}
+        adapter_with_session_store._resolve_user_name = AsyncMock(return_value="Tyler")
+        adapter_with_session_store._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\n"
+        )
+
+        event = {
+            "text": "<@U_BOT> can you help here?",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "assistant_thread": {
+                "channel_id": "C123",
+                "thread_ts": "123.000",
+            },
+        }
+
+        await adapter_with_session_store._handle_slack_message(event)
+
+        adapter_with_session_store._fetch_thread_context.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.456",
+            team_id="T_TEAM",
+        )
+        adapter_with_session_store.handle_message.assert_called_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "123.000"
+        assert msg_event.text == "[Thread context]\ncan you help here?"
+
+    @pytest.mark.asyncio
     async def test_top_level_message_requires_mention_even_with_session(
         self, adapter_with_session_store, mock_session_store
     ):

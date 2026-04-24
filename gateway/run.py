@@ -7539,31 +7539,14 @@ class GatewayRunner:
             except Exception:
                 db_total_tokens = 0
 
-        display_chat_id = source.chat_id
-        display_thread_id = source.thread_id
-        if source.platform == Platform.DISCORD and source.chat_type == "thread":
-            raw_channel = getattr(getattr(event, "raw_message", None), "channel", None)
-            parent_id = getattr(raw_channel, "parent_id", None)
-            if parent_id is not None:
-                display_chat_id = str(parent_id)
-            if not display_thread_id:
-                raw_thread_id = getattr(raw_channel, "id", None)
-                if raw_thread_id is not None:
-                    display_thread_id = str(raw_thread_id)
-
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
             f"**Session ID:** `{session_entry.session_id}`",
-            f"**Platform:** `{source.platform.value}`",
-            f"**Chat ID:** `{display_chat_id}`",
-        ]
-        if display_thread_id:
-            lines.append(f"**Thread ID:** `{display_thread_id}`")
-        lines.extend([
+            f"**Session Key:** `{session_key}`",
             f"**Commit:** `{commit_label}`",
             f"**Model:** `{model_name}`",
-        ])
+        ]
         if title:
             lines.append(f"**Title:** {title}")
         lines.extend([
