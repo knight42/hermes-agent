@@ -2679,7 +2679,7 @@ class SlackAdapter(BasePlatformAdapter):
                 current_ts,
                 len(messages),
                 bot_uid,
-                len(self._bot_message_ts),
+                len(getattr(self, "_bot_message_ts", set())),
             )
             context_parts = []
             parent_text = ""
@@ -2724,7 +2724,8 @@ class SlackAdapter(BasePlatformAdapter):
                     if msg_team
                     else None
                 ) or self._bot_user_id
-                if msg_ts in self._bot_message_ts or (
+                bot_message_ts = getattr(self, "_bot_message_ts", set())
+                if msg_ts in bot_message_ts or (
                     is_bot
                     and not is_parent
                     and self_bot_uid

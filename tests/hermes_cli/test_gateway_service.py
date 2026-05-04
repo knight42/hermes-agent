@@ -129,11 +129,8 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         # Prevent run_gateway from actually starting the gateway
-        def fake_start_gateway(**kwargs):
-            import asyncio
-            f = asyncio.Future()
-            f.set_result(True)
-            return f
+        async def fake_start_gateway(**kwargs):
+            return True
 
         monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
 
